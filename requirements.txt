@@ -1,0 +1,11 @@
+# DDL Assistant 依赖
+# 核心
+PySide6>=6.6
+SQLAlchemy>=2.0
+pydantic>=2.5
+# AI 与通知（后续阶段使用，先装上便于一次性安装）
+ollama>=0.3
+windows-toasts>=0.5
+# 测试与打包
+pytest>=8.0
+pyinstaller>=6.0

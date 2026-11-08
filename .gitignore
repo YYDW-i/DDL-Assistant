@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+build/
+dist/
+*.spec
+.venv/
+venv/
+
+# 测试与缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 本地数据（运行时生成在 %LOCALAPPDATA%，不应入库）
+*.db
+*.sqlite
+*.sqlite3
+logs/
+backups/
