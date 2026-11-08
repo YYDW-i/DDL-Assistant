@@ -55,6 +55,8 @@ QPushButton#PrimaryBtn:hover { background: #3a6be8; }
 QListWidget { background: transparent; border: none; outline: none; }
 QListWidget::item { background: #ffffff; border: 1px solid #e8eaf0; border-radius: 10px; padding: 12px; margin: 4px 2px; }
 QListWidget::item:hover { border-color: #c9d4f0; }
+QListWidget::item:selected { background: #e7efff; color: #1e345c; border: 1px solid #4a7dff; }
+QListWidget { selection-background-color: #e7efff; selection-color: #1e345c; }
 QCalendarWidget { background: #ffffff; }
 """
 
@@ -74,6 +76,8 @@ QPushButton#PrimaryBtn:hover { background: #3a6be8; }
 QListWidget { background: transparent; border: none; outline: none; }
 QListWidget::item { background: #2a2d35; border: 1px solid #353942; border-radius: 10px; padding: 12px; margin: 4px 2px; }
 QListWidget::item:hover { border-color: #4a7dff; }
+QListWidget::item:selected { background: #344865; color: #ffffff; border: 1px solid #709cff; }
+QListWidget { selection-background-color: #344865; selection-color: #ffffff; }
 QCalendarWidget { background: #2a2d35; color: #e4e6eb; }
 QCalendarWidget QAbstractItemView:enabled { background: #2a2d35; color: #e4e6eb; }
 """
