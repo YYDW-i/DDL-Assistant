@@ -53,6 +53,20 @@ def test_manual_dialog_supports_fractional_hours_and_multiple_reminders(temp_db,
     from app.ui.dialogs import TaskDialog
     dlg = TaskDialog()
     dlg.hours.setValue(1.5)
+    dlg.use_default_reminders.setChecked(False)
     dlg.reminders.setPlainText("2030-01-01 09:00\n2030-01-02 18:00")
     assert dlg.get_estimated_hours() == 1.5
     assert len(dlg.get_reminder_times()) == 2
+
+
+def test_default_reminder_preview_tracks_deadline(temp_db, qt_app):
+    from app.ui.dialogs import TaskDialog
+    from PySide6.QtCore import QTime
+    dlg = TaskDialog()
+    dlg.due_date.setDate(QDate(2030, 1, 10))
+    dlg.due_time.setTime(QTime(18, 0))
+    assert dlg.get_reminder_times() is None
+    assert dlg.reminders.toPlainText().splitlines() == ["2030-01-07T18:00", "2030-01-09T18:00", "2030-01-10T15:00"]
+    dlg.use_default_reminders.setChecked(False)
+    dlg.reminders.clear()
+    assert dlg.get_reminder_times() == []

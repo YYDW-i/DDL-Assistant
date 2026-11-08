@@ -11,10 +11,8 @@ from sqlalchemy.orm import Session
 
 from ..db.models import NotificationLog, Task, TaskStatus
 
-# 默认提醒：截止前一天 20:00
-DEFAULT_REMINDER_DAYS_BEFORE = 1
-DEFAULT_REMINDER_HOUR = 20
-DEFAULT_REMINDER_MINUTE = 0
+# Default offsets are relative to the actual deadline (all-day = 23:59).
+DEFAULT_REMINDER_HOURS = (72, 24, 3)
 
 
 def due_datetime(task: Task) -> datetime:
@@ -24,21 +22,16 @@ def due_datetime(task: Task) -> datetime:
     return datetime.combine(task.due_date, task.due_time)
 
 
-def default_reminder_time(task: Task) -> datetime:
-    """默认计划提醒时刻：截止前一天 20:00。
-
-    若截止日就是今天（前一天已过），则提前 1 小时。
-    """
+def default_reminder_times(task: Task) -> list[datetime]:
     due = due_datetime(task)
-    candidate = (due - timedelta(days=DEFAULT_REMINDER_DAYS_BEFORE)).replace(
-        hour=DEFAULT_REMINDER_HOUR,
-        minute=DEFAULT_REMINDER_MINUTE,
-        second=0,
-        microsecond=0,
-    )
-    if candidate >= due:
-        candidate = due - timedelta(hours=1)
-    return candidate
+    return [max(datetime.min, due - timedelta(hours=hours))
+            if due >= datetime.min + timedelta(hours=hours) else datetime.min
+            for hours in DEFAULT_REMINDER_HOURS]
+
+
+def default_reminder_time(task: Task) -> datetime:
+    """Compatibility helper for the 24 hour reminder."""
+    return default_reminder_times(task)[1]
 
 
 @dataclass
@@ -60,10 +53,9 @@ def collect_due_reminders(session: Session, now: Optional[datetime] = None) -> S
     ).scalars().all()
 
     # 已通知记录
-    notified = set(
-        (r.task_id, r.kind)
-        for r in session.execute(select(NotificationLog)).scalars().all()
-    )
+    logs = session.execute(select(NotificationLog)).scalars().all()
+    notified = {(r.task_id, r.kind) for r in logs}
+    legacy = {r.task_id: r.notified_at for r in logs if r.kind == "scheduled"}
 
     out: list[ReminderItem] = []
     for t in rows:
@@ -72,7 +64,15 @@ def collect_due_reminders(session: Session, now: Optional[datetime] = None) -> S
             if (t.id, "overdue") not in notified:
                 out.append(ReminderItem(task=t, kind="overdue", due_at=due))
             continue
-        schedule = [("scheduled", default_reminder_time(t))] if t.reminder_times is None else [
+        if t.reminder_times is None:
+            elapsed = [(f"scheduled:{hours}h", at) for hours, at in zip(DEFAULT_REMINDER_HOURS, default_reminder_times(t)) if at <= now]
+            if elapsed:
+                kind, at = elapsed[-1]
+                # Latest elapsed slot covers older missed slots; future slots remain active.
+                if (t.id, kind) not in notified and legacy.get(t.id, datetime.min) < at:
+                    out.append(ReminderItem(task=t, kind=kind, due_at=due))
+            continue
+        schedule = [
             ("custom:" + datetime.fromisoformat(value).strftime("%Y%m%d%H%M"), datetime.fromisoformat(value))
             for value in t.reminder_times
         ]

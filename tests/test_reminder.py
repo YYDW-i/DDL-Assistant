@@ -33,10 +33,10 @@ class TestDueTime:
         t = _pending(all_day=True)
         assert due_datetime(t).time() == time(23, 59)
 
-    def test_default_reminder_day_before(self):
+    def test_default_reminder_24_hours_before(self):
         t = _pending(due_date=date(2030, 1, 10), due_time=time(12, 0))
         r = default_reminder_time(t)
-        assert r == datetime(2030, 1, 9, 20, 0)
+        assert r == datetime(2030, 1, 9, 12, 0)
 
 
 class TestCollect:
@@ -57,7 +57,7 @@ class TestCollect:
         now = datetime.now().replace(hour=20, minute=30, second=0, microsecond=0)
         items = collect_due_reminders(s, now=now)
         kinds = [(i.task.id, i.kind) for i in items]
-        assert (t.id, "scheduled") in kinds
+        assert (t.id, "scheduled:24h") in kinds
 
     def test_notify_dedup(self, temp_db):
         s = temp_db()

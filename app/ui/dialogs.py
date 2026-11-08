@@ -76,8 +76,12 @@ class TaskDialog(QDialog):
         self.desc.setMinimumHeight(80)
         form.addRow("描述", self.desc)
 
+        self.use_default_reminders = QCheckBox("默认：截止前72小时、24小时、3小时")
+        self.use_default_reminders.setChecked(True)
+        self.use_default_reminders.toggled.connect(self._refresh_default_reminders)
+        form.addRow(self.use_default_reminders)
         self.reminders = QPlainTextEdit()
-        self.reminders.setPlaceholderText("留空：截止前一天20:00；自定义多个时刻，每行一个\n2030-01-01 09:00\n2030-01-02 18:00")
+        self.reminders.setPlaceholderText("自定义多个本地时间，每行一个，如2030-01-01 09:00")
         self.reminders.setMaximumHeight(80)
         form.addRow("自定义提醒", self.reminders)
         self.source_label = QLabel("手动添加")
@@ -88,6 +92,18 @@ class TaskDialog(QDialog):
         buttons.accepted.connect(self._on_ok)
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
+        self.due_date.dateChanged.connect(self._refresh_default_reminders)
+        self.due_time.timeChanged.connect(self._refresh_default_reminders)
+        self.all_day.toggled.connect(self._refresh_default_reminders)
+        self._refresh_default_reminders()
+
+    def _refresh_default_reminders(self, *_):
+        using_default = self.use_default_reminders.isChecked()
+        self.reminders.setEnabled(not using_default)
+        if using_default:
+            from ..reminder.core import default_reminder_times
+            task = Task(due_date=self.get_due_date(), due_time=self.get_due_time(), all_day=self.get_all_day())
+            self.reminders.setPlainText("\n".join(dt.isoformat(timespec="minutes") for dt in default_reminder_times(task)))
 
     def _on_all_day_changed(self, state: int):
         self.due_time.setEnabled(state == 0)
@@ -103,6 +119,8 @@ class TaskDialog(QDialog):
         self.hours.setValue(task.estimated_hours)
         self.desc.setPlainText(task.description)
         self.reminders.setPlainText("\n".join(task.reminder_times or []))
+        self.use_default_reminders.setChecked(task.reminder_times is None)
+        self._refresh_default_reminders()
         self.source_label.setText(f"{task.source} · 创建于 {task.created_at:%Y-%m-%d %H:%M}\n{task.source_detail}")
 
     def _on_ok(self):
@@ -146,9 +164,11 @@ class TaskDialog(QDialog):
         return self.desc.toPlainText().strip()
 
     def get_reminder_times(self):
+        if self.use_default_reminders.isChecked():
+            return None
         lines = self.reminders.toPlainText().strip().splitlines()
         if not lines:
-            return None
+            return []
         result = []
         for line in lines:
             if not line.strip():
