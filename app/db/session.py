@@ -10,7 +10,7 @@ from .models import Base
 from .locking import initialization_lock
 
 logger = logging.getLogger(__name__)
-CURRENT_SCHEMA_VERSION = "3"
+CURRENT_SCHEMA_VERSION = "4"
 _engine = None
 _SessionFactory = None
 

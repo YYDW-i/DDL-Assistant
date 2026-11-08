@@ -10,7 +10,7 @@ from datetime import date, datetime, time
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import Date, DateTime, Float, Integer, String, Text, Time, Boolean, Index, JSON, CheckConstraint
+from sqlalchemy import Date, DateTime, Float, Integer, String, Text, Time, Boolean, Index, JSON, CheckConstraint, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -87,6 +87,19 @@ class SchemaMeta(Base):
 
     key: Mapped[str] = mapped_column(String(50), primary_key=True)
     value: Mapped[str] = mapped_column(String(200), default="")
+
+
+class DailyPlanItem(Base):
+    """A day references existing tasks; removing a plan entry preserves the task."""
+    __tablename__ = "daily_plan_items"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    plan_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False)
+    planned_start: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
+    position: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    __table_args__ = (UniqueConstraint("plan_date", "task_id", name="uq_plan_day_task"),
+                      CheckConstraint("position >= 0", name="ck_plan_position"))
 
 
 class NotificationLog(Base):
