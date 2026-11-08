@@ -81,3 +81,23 @@ class SchemaMeta(Base):
 
     key: Mapped[str] = mapped_column(String(50), primary_key=True)
     value: Mapped[str] = mapped_column(String(200), default="")
+
+
+class NotificationLog(Base):
+    """提醒发送记录：用于去重，避免重复弹窗。"""
+
+    __tablename__ = "notification_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[int] = mapped_column(Integer, index=True)
+    # 提醒类型："scheduled"（计划提醒）/ "overdue"（逾期补推）
+    kind: Mapped[str] = mapped_column(String(20))
+    due_at: Mapped[datetime] = mapped_column(DateTime)
+    notified_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now().replace(microsecond=0)
+    )
+
+    __table_args__ = (
+        # 同一任务同一类型只发一次
+        Index("ix_notif_task_kind", "task_id", "kind", unique=True),
+    )
