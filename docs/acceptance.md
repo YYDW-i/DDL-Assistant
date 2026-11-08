@@ -27,7 +27,7 @@
 ## 验证范围
 
 - 原始基线：27通过、1失败；备份端到端测试误用真实数据目录。
-- 最终自动化：61项，涵盖CRUD、搜索、验证、导入原子性、在线备份完整性、v2迁移和未来版本拒绝、并发首次初始化、双进程提醒去重、延迟通知失败、极早日期、AI Schema/预览/歧义/逐条选择、修改快照、日历刷新、Windows原生快捷方式、XML转义和冻结运行库兼容。
+- 最终自动化：76项，涵盖CRUD、搜索、验证、导入原子性、在线备份完整性、v2迁移和未来版本拒绝、并发首次初始化、双进程提醒去重、延迟通知失败、极早日期、AI Schema/预览/歧义/逐条选择、修改快照、日历刷新、Windows原生快捷方式、XML转义和冻结运行库兼容。
 - 真实 Ollama：本机已安装的 qwen3.5:4b；文字中两个任务（一个日期未定）、中文截图中两个带日期时间任务，以及针对指定ID的完成任务建议。输入与结构化结果位于 `.pytest-tmp/ollama-check/`；复查命令 `python scripts/check_ollama.py`。
 - 计划任务定义：使用 Windows Schedule.Service 原生 TaskDefinition.XmlText 成功解析最终XML；此检查没有注册任务。交互式用户、15分钟间隔和特殊路径另有自动化测试。
 - 原生快捷方式：实际调用 Windows COM，在隔离目录生成LNK并核查嵌入的 AUMID，未写真实开始菜单。
@@ -52,3 +52,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts\build.ps1
 ```
 
 接口核对依据：[Ollama结构化输出官方示例](https://github.com/ollama/ollama-python/blob/main/examples/structured-outputs.py)、[Windows-Toasts Toast接口](https://windows-toasts.readthedocs.io/en/latest/user/toast.html)、[Microsoft桌面通知应用身份说明](https://learn.microsoft.com/en-us/windows/win32/shell/enable-desktop-toast-with-appusermodelid)。
+
+## 本次增量更新：今日计划、选中颜色、默认提醒
+
+- 亮色选中任务使用浅蓝背景和深色字体；暗色选中使用深蓝背景和白字，焦点切换后保持可读。像素渲染回归测试通过。
+- 默认提醒改为截止前72/24/3小时；缺失时点合并补推，旧默认通知记录兼容，已设置的自定义时刻不变。
+- v4新增每日计划引用表；导入不复制任务，移出只移除引用；任务和计划原子创建，计划开始与DDL独立。
+- 独立审查实测了安排时间、编辑保留自定义提醒、完成/重开、移出保留任务及AI逐行选择，未发现重要问题。
+- 真实数据保护：修改前对现有数据库作只读在线备份；以该备份的隔离副本升级，原3条任务和1条通知记录逐行一致，真实数据库未在开发中迁移。
+- 真实qwen3.5:4b每日计划验收：按描述生成09:00/14:00/19:00的三项任务，预计2/1.5/0.5小时；同时回归文字、截图、任务操作建议。
+- 逐项中文Git提交；最终重新构建两个EXE并强制进行启动检查、ZIP完整性及SHA256校验，随后同步GitHub。

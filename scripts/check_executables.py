@@ -4,9 +4,11 @@ import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 from PyInstaller.archive.readers import CArchiveReader
 
 ROOT = Path(__file__).resolve().parents[1]
+RELEASE = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / "dist"
 OUTPUT = ROOT / ".pytest-tmp" / "frozen-smoke"
 OUTPUT.mkdir(parents=True, exist_ok=True)
 for filename in ("self-check.json", "reminder-diagnostics.json", "self-check.png"):
@@ -15,7 +17,7 @@ env = dict(os.environ, LOCALAPPDATA=str(OUTPUT), QT_QPA_PLATFORM="offscreen")
 for name, arguments in [("DDLAssistant.exe", ["--self-check"]),
                          ("DDLAssistantReminder.exe", ["--check-libraries"]),
                          ("DDLAssistantReminder.exe", ["--dry-run"])]:
-    executable = ROOT / "dist" / name
+    executable = RELEASE / name
     archive = CArchiveReader(str(executable))
     assert not any(Path(member).name.lower() == "icuuc.dll" for member in archive.toc), "A foreign ICU library was bundled"
     subprocess.run([str(executable), *arguments], env=env, check=True, timeout=120)
