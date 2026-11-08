@@ -8,6 +8,7 @@ from typing import Optional, Sequence
 from ..db.models import Task, TaskStatus
 from ..db.repository import TaskRepository
 from ..db.session import get_session
+from ..reminder.core import reset_reminders_for_task
 
 
 @dataclass
@@ -50,7 +51,16 @@ class TaskService:
         # 若改为全天，清空 due_time
         if fields.get("all_day"):
             fields["due_time"] = None
-        return self.repo.update(task_id, **fields)
+        task = self.repo.update(task_id, **fields)
+        if task is not None:
+            # 改了任务时间，清空旧提醒记录，让新时间能触发
+            reset_reminders_for_task(self.session, task_id)
+        return task
+
+    def delete(self, task_id: int) -> bool:
+        # 级联清理通知记录
+        reset_reminders_for_task(self.session, task_id)
+        return self.repo.delete(task_id)
 
     def delete(self, task_id: int) -> bool:
         return self.repo.delete(task_id)
