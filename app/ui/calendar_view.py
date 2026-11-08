@@ -42,6 +42,7 @@ class CalendarView(QWidget):
 
     def _mark_days(self):
         """给有未完成任务的日期加红点标记。"""
+        self.calendar.setDateTextFormat(QDate(), QTextCharFormat())
         all_tasks = self.service.repo.list(status="pending")
         marked: dict[date, int] = {}
         for t in all_tasks:
@@ -52,6 +53,7 @@ class CalendarView(QWidget):
             fmt.setBackground(QBrush(QColor("#4a7dff")))
             fmt.setForeground(QBrush(QColor("#ffffff")))
             self.calendar.setDateTextFormat(qd, fmt)
+        self._on_date_clicked(self.calendar.selectedDate())
 
     def _on_date_clicked(self, qd: QDate):
         d = date(qd.year(), qd.month(), qd.day())

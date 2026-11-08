@@ -13,7 +13,9 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QLineEdit,
     QPlainTextEdit,
-    QSpinBox,
+    QDoubleSpinBox,
+    QMessageBox,
+    QLabel,
     QTimeEdit,
     QDateEdit,
 )
@@ -64,7 +66,7 @@ class TaskDialog(QDialog):
         self.priority.setCurrentIndex(1)
         form.addRow("重要程度", self.priority)
 
-        self.hours = QSpinBox()
+        self.hours = QDoubleSpinBox()
         self.hours.setRange(0, 1000)
         self.hours.setSuffix(" 小时")
         form.addRow("预计工作量", self.hours)
@@ -73,6 +75,14 @@ class TaskDialog(QDialog):
         self.desc.setPlaceholderText("补充说明、链接、要求…")
         self.desc.setMinimumHeight(80)
         form.addRow("描述", self.desc)
+
+        self.reminders = QPlainTextEdit()
+        self.reminders.setPlaceholderText("留空：截止前一天20:00；自定义多个时刻，每行一个\n2030-01-01 09:00\n2030-01-02 18:00")
+        self.reminders.setMaximumHeight(80)
+        form.addRow("自定义提醒", self.reminders)
+        self.source_label = QLabel("手动添加")
+        self.source_label.setWordWrap(True)
+        form.addRow("来源", self.source_label)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self._on_ok)
@@ -90,12 +100,19 @@ class TaskDialog(QDialog):
         if task.due_time:
             self.due_time.setTime(QTime(task.due_time.hour, task.due_time.minute))
         self.priority.setCurrentIndex(task.priority - 1)
-        self.hours.setValue(int(task.estimated_hours))
+        self.hours.setValue(task.estimated_hours)
         self.desc.setPlainText(task.description)
+        self.reminders.setPlainText("\n".join(task.reminder_times or []))
+        self.source_label.setText(f"{task.source} · 创建于 {task.created_at:%Y-%m-%d %H:%M}\n{task.source_detail}")
 
     def _on_ok(self):
         if not self.title_edit.text().strip():
             self.title_edit.setFocus()
+            return
+        try:
+            self.get_reminder_times()
+        except ValueError as exc:
+            QMessageBox.warning(self, "提醒时间无效", str(exc))
             return
         self.accept()
 
@@ -127,3 +144,17 @@ class TaskDialog(QDialog):
 
     def get_description(self) -> str:
         return self.desc.toPlainText().strip()
+
+    def get_reminder_times(self):
+        lines = self.reminders.toPlainText().strip().splitlines()
+        if not lines:
+            return None
+        result = []
+        for line in lines:
+            if not line.strip():
+                continue
+            dt = datetime.fromisoformat(line.strip())
+            if dt.tzinfo:
+                raise ValueError("请使用本地日期时间，如 2030-01-01 09:00")
+            result.append(dt.isoformat(timespec="minutes"))
+        return result

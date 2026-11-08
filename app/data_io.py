@@ -1,69 +1,136 @@
-"""数据导出/导入：CSV / JSON，以及每日自动备份。"""
+"""CSV/JSON round trips and consistent SQLite online backups."""
 from __future__ import annotations
-
 import csv
 import json
 import logging
-import shutil
-from datetime import datetime
+import sqlite3
+from contextlib import closing
+from dataclasses import fields
+from datetime import date, datetime, time
 from pathlib import Path
-from typing import Sequence
 
 from . import config
 from .db.models import Task
-from .db.session import get_session
+from .db.session import get_engine, get_session
+from .services.task_service import TaskCreate, validate_task
 
 logger = logging.getLogger(__name__)
+TASK_FIELDS = [f.name for f in fields(TaskCreate)]
+EXPORT_FIELDS = ["id"] + TASK_FIELDS + ["status", "created_at", "updated_at", "completed_at"]
 
 
-def export_csv(path: Path) -> int:
-    session = get_session()
-    tasks = session.query(Task).order_by(Task.due_date).all()
-    with open(path, "w", newline="", encoding="utf-8-sig") as f:
-        w = csv.writer(f)
-        w.writerow(["id", "title", "category", "due_date", "due_time", "all_day",
-                    "priority", "status", "estimated_hours", "source", "description"])
-        for t in tasks:
-            w.writerow([
-                t.id, t.title, t.category,
-                t.due_date.isoformat(),
-                t.due_time.strftime("%H:%M") if t.due_time else "",
-                int(t.all_day), t.priority, t.status,
-                t.estimated_hours, t.source, t.description,
-            ])
-    logger.info("导出 %d 条任务到 %s", len(tasks), path)
-    return len(tasks)
+def _records():
+    with get_session() as session:
+        return [{key: _serialize(getattr(t, key)) for key in EXPORT_FIELDS}
+                for t in session.query(Task).order_by(Task.due_date).all()]
+
+
+def _serialize(value):
+    return value.isoformat() if isinstance(value, (date, time, datetime)) else value
 
 
 def export_json(path: Path) -> int:
-    session = get_session()
-    tasks = session.query(Task).order_by(Task.due_date).all()
-    data = [{
-        "id": t.id, "title": t.title, "category": t.category,
-        "due_date": t.due_date.isoformat(),
-        "due_time": t.due_time.strftime("%H:%M") if t.due_time else None,
-        "all_day": t.all_day, "priority": t.priority, "status": t.status,
-        "estimated_hours": t.estimated_hours, "source": t.source,
-        "description": t.description,
-    } for t in tasks]
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    logger.info("导出 %d 条任务到 %s", len(data), path)
+    data = _records()
+    Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return len(data)
 
 
-def backup_database() -> Path:
-    """复制当前 db 到 backups/ 目录，带时间戳。保留最近 14 份。"""
-    src = config.db_path()
-    bdir = config.backup_dir()
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dst = bdir / f"ddl_{stamp}.db"
-    shutil.copy2(src, dst)
-    # 清理旧备份
-    backups = sorted(bdir.glob("ddl_*.db"))
-    for old in backups[:-14]:
+def export_csv(path: Path) -> int:
+    data = _records()
+    with open(path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=EXPORT_FIELDS)
+        writer.writeheader()
+        for row in data:
+            row["reminder_times"] = json.dumps(row["reminder_times"])
+            writer.writerow(row)
+    return len(data)
+
+
+def read_import(path: Path) -> list[dict]:
+    path = Path(path)
+    if path.suffix.lower() == ".csv":
+        with path.open(encoding="utf-8-sig", newline="") as f:
+            raw = list(csv.DictReader(f))
+    elif path.suffix.lower() == ".json":
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    else:
+        raise ValueError("仅支持 CSV / JSON")
+    if not isinstance(raw, list):
+        raise ValueError("导入内容必须是任务列表")
+    result = []
+    for index, row in enumerate(raw, 1):
         try:
-            old.unlink()
-        except OSError:
-            pass
-    logger.info("数据库已备份到 %s", dst)
-    return dst
+            values = {k: v for k, v in row.items() if k in TASK_FIELDS}
+            values["due_date"] = date.fromisoformat(values.get("due_date") or "")
+            values["due_time"] = time.fromisoformat(values["due_time"]) if values.get("due_time") else None
+            if "all_day" in values and not isinstance(values["all_day"], bool):
+                if str(values["all_day"]).lower() not in ("true", "false", "1", "0"):
+                    raise ValueError("全天字段无效")
+                values["all_day"] = str(values["all_day"]).lower() in ("true", "1")
+            values["priority"] = int(values.get("priority", 2))
+            values["estimated_hours"] = float(values.get("estimated_hours", 0))
+            if isinstance(values.get("reminder_times"), str):
+                values["reminder_times"] = json.loads(values["reminder_times"] or "null")
+            values = validate_task(TaskCreate(**values))
+            status = row.get("status") or "pending"
+            if status not in ("pending", "completed"):
+                raise ValueError("状态无效")
+            values["status"] = status
+            for key in ("created_at", "updated_at", "completed_at"):
+                if row.get(key):
+                    dt = datetime.fromisoformat(row[key])
+                    if dt.tzinfo:
+                        raise ValueError("时间戳应为本地时间")
+                    values[key] = dt
+            if status == "completed" and not values.get("completed_at"):
+                values["completed_at"] = datetime.now()
+            result.append(values)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise ValueError(f"第 {index} 条任务无效：{exc}") from exc
+    return result
+
+
+def import_records(records: list[dict]) -> int:
+    # records must originate from read_import; never update existing IDs.
+    with get_session() as session:
+        try:
+            session.add_all([Task(**row) for row in records])
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+    logger.info("Imported %d tasks", len(records))
+    return len(records)
+
+
+def import_tasks(path: Path) -> int:
+    return import_records(read_import(path))
+
+
+def backup_database(destination_dir=None) -> Path:
+    source = Path(get_engine().url.database)
+    bdir = Path(destination_dir) if destination_dir else config.backup_dir()
+    bdir.mkdir(parents=True, exist_ok=True)
+    target = bdir / f"ddl_{datetime.now():%Y%m%d_%H%M%S_%f}.db"
+    partial = target.with_suffix(".tmp")
+    try:
+        with closing(sqlite3.connect(source)) as src, closing(sqlite3.connect(partial)) as dst:
+            src.backup(dst)
+            if dst.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+                raise RuntimeError("备份完整性检查失败")
+        partial.replace(target)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
+    for old in sorted(bdir.glob("ddl_*.db"))[:-14]:
+        old.unlink(missing_ok=True)
+    logger.info("Database backed up to %s", target)
+    return target
+
+
+def backup_if_due(destination_dir=None):
+    bdir = Path(destination_dir) if destination_dir else config.backup_dir()
+    existing = sorted(bdir.glob(f"ddl_{datetime.now():%Y%m%d}_*.db"))
+    if existing:
+        return existing[-1]
+    return backup_database(destination_dir=bdir)

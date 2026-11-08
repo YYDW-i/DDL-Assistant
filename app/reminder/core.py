@@ -6,6 +6,7 @@ from datetime import datetime, time, timedelta
 from typing import Optional, Sequence
 
 from sqlalchemy import select
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
 from ..db.models import NotificationLog, Task, TaskStatus
@@ -67,24 +68,29 @@ def collect_due_reminders(session: Session, now: Optional[datetime] = None) -> S
     out: list[ReminderItem] = []
     for t in rows:
         due = due_datetime(t)
-        rem = default_reminder_time(t)
+        if now >= due:
+            if (t.id, "overdue") not in notified:
+                out.append(ReminderItem(task=t, kind="overdue", due_at=due))
+            continue
+        schedule = [("scheduled", default_reminder_time(t))] if t.reminder_times is None else [
+            ("custom:" + datetime.fromisoformat(value).strftime("%Y%m%d%H%M"), datetime.fromisoformat(value))
+            for value in t.reminder_times
+        ]
 
         # 计划提醒：now 已到提醒时刻，且尚未到截止时刻
-        if now >= rem and now < due and (t.id, "scheduled") not in notified:
-            out.append(ReminderItem(task=t, kind="scheduled", due_at=due))
-
-        # 逾期补推：已过截止时刻
-        if now >= due and (t.id, "overdue") not in notified:
-            out.append(ReminderItem(task=t, kind="overdue", due_at=due))
+        for kind, rem in schedule:
+            if rem <= now < due and (t.id, kind) not in notified:
+                out.append(ReminderItem(task=t, kind=kind, due_at=due))
 
     out.sort(key=lambda x: x.due_at)
     return out
 
 
-def mark_notified(session: Session, task_id: int, kind: str, due_at: datetime) -> None:
+def mark_notified(session: Session, task_id: int, kind: str, due_at: datetime, commit=True) -> None:
     """写入通知记录（去重）。"""
-    session.add(NotificationLog(task_id=task_id, kind=kind, due_at=due_at))
-    session.commit()
+    session.execute(insert(NotificationLog).values(task_id=task_id, kind=kind, due_at=due_at).on_conflict_do_nothing(index_elements=["task_id", "kind"]))
+    if commit:
+        session.commit()
 
 
 def reset_reminders_for_task(session: Session, task_id: int) -> None:

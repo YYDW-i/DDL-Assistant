@@ -25,17 +25,22 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QButtonGroup,
+    QFileDialog,
+    QDialog,
+    QDialogButtonBox,
+    QPlainTextEdit,
 )
 
 from ..db.models import Task
 from ..services.task_service import TaskCreate, TaskService
 from .calendar_view import CalendarView
 from .dialogs import TaskDialog
+from ..settings import load_settings, save_settings
 
 logger = logging.getLogger(__name__)
 
 LIGHT_QSS = """
-QMainWindow, QWidget { background: #f5f6fa; color: #2c3e50; font-family: "Microsoft YaHei UI", "Segoe UI"; font-size: 14px; }
+QMainWindow, QWidget { background: #f5f6fa; color: #2c3e50; font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"; font-size: 14px; }
 #Sidebar { background: #ffffff; border-right: 1px solid #e8eaf0; }
 #NavButton { text-align: left; padding: 10px 18px; border: none; border-radius: 8px; margin: 2px 8px; background: transparent; }
 #NavButton:hover { background: #eef1f7; }
@@ -54,7 +59,7 @@ QCalendarWidget { background: #ffffff; }
 """
 
 DARK_QSS = """
-QMainWindow, QWidget { background: #1e2128; color: #e4e6eb; font-family: "Microsoft YaHei UI", "Segoe UI"; font-size: 14px; }
+QMainWindow, QWidget { background: #1e2128; color: #e4e6eb; font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI"; font-size: 14px; }
 #Sidebar { background: #2a2d35; border-right: 1px solid #353942; }
 #NavButton { text-align: left; padding: 10px 18px; border: none; border-radius: 8px; margin: 2px 8px; background: transparent; color: #cfd2d8; }
 #NavButton:hover { background: #353942; }
@@ -87,8 +92,11 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("DDL Assistant")
         self.resize(1100, 740)
-        self._dark = False
-        self.setStyleSheet(LIGHT_QSS)
+        self._dark = load_settings().get("dark", False)
+        QApplication.instance().setStyleSheet(DARK_QSS if self._dark else LIGHT_QSS)
+        screen = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(1100, screen.width()), min(740, screen.height()))
+        self._maintenance = None
 
         self.service = TaskService()
         self.current_view = "today"
@@ -101,6 +109,16 @@ class MainWindow(QMainWindow):
 
         # 启动时自动补推一次提醒（开机后错过的通知）
         QTimer.singleShot(2000, self._run_reminder_once)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._maintenance_tick)
+        self._timer.start(60_000)
+        data_menu = self.menuBar().addMenu("数据")
+        for title, callback in [("导出 JSON", lambda: self._export("json")), ("导出 CSV", lambda: self._export("csv")),
+                                ("导入 CSV / JSON", self._import), ("立即备份", self._backup)]:
+            data_menu.addAction(title, callback)
+        ai_menu = self.menuBar().addMenu("AI")
+        ai_menu.addAction("查询任务 / 修改建议", self._open_query)
+        self.menuBar().addAction("设置", self._settings)
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -169,6 +187,15 @@ class MainWindow(QMainWindow):
         ai_btn.clicked.connect(self._open_ai)
         top.addWidget(ai_btn)
         mlayout.addLayout(top)
+        quick_row = QHBoxLayout()
+        self.quick_input = QLineEdit()
+        self.quick_input.setPlaceholderText("AI 快速添加，例如：下周三下午两点交实验报告")
+        self.quick_input.returnPressed.connect(self._quick_add)
+        quick_row.addWidget(self.quick_input, 1)
+        quick_btn = QPushButton("识别并预览")
+        quick_btn.clicked.connect(self._quick_add)
+        quick_row.addWidget(quick_btn)
+        mlayout.addLayout(quick_row)
 
         # 统计卡片
         stats_row = QHBoxLayout()
@@ -249,6 +276,7 @@ class MainWindow(QMainWindow):
         self._reload_view()
 
     def _reload_view(self):
+        self.service.session.expire_all()
         if self.current_view == "calendar":
             self.stack.setCurrentWidget(self.calendar_view)
             self.calendar_view._mark_days()
@@ -355,9 +383,11 @@ class MainWindow(QMainWindow):
                     all_day=dlg.get_all_day(),
                     priority=dlg.get_priority(),
                     estimated_hours=dlg.get_estimated_hours(),
+                    reminder_times=dlg.get_reminder_times(),
                 ))
                 self._reload_view()
-            except ValueError as e:
+            except Exception as e:
+                self.service.session.rollback()
                 QMessageBox.warning(self, "提示", str(e))
 
     def _open_edit(self, item: QListWidgetItem):
@@ -379,6 +409,7 @@ class MainWindow(QMainWindow):
                 all_day=dlg.get_all_day(),
                 priority=dlg.get_priority(),
                 estimated_hours=dlg.get_estimated_hours(),
+                reminder_times=dlg.get_reminder_times(),
             )
             self._reload_view()
 
@@ -388,40 +419,111 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self._reload_view()
 
+    def _quick_add(self):
+        from .ai_dialog import AIDialog
+        dlg = AIDialog(self, initial_text=self.quick_input.text())
+        if dlg.exec():
+            self.quick_input.clear()
+            self._reload_view()
+
+    def _open_query(self):
+        from .query_dialog import QueryDialog
+        if QueryDialog(self).exec():
+            self._reload_view()
+
+    def _settings(self):
+        from .settings_dialog import SettingsDialog
+        SettingsDialog(self).exec()
+
+    def _export(self, kind):
+        from .. import data_io
+        from pathlib import Path
+        path, _ = QFileDialog.getSaveFileName(self, "导出任务", f"tasks.{kind}", f"{kind.upper()} (*.{kind})")
+        if path:
+            try:
+                count = getattr(data_io, f"export_{kind}")(Path(path))
+                QMessageBox.information(self, "导出完成", f"已导出 {count} 条任务。")
+            except Exception as exc:
+                QMessageBox.warning(self, "导出失败", str(exc))
+
+    def _import(self):
+        import json
+        from pathlib import Path
+        from .. import data_io
+        path, _ = QFileDialog.getOpenFileName(self, "导入任务", "", "任务 (*.json *.csv)")
+        if not path:
+            return
+        try:
+            records = data_io.read_import(Path(path))
+            preview = QDialog(self)
+            preview.setWindowTitle(f"导入预览：新增 {len(records)} 条任务（重复导入会新增副本）")
+            preview.resize(750, 500)
+            layout = QVBoxLayout(preview)
+            text = QPlainTextEdit(json.dumps(records, default=str, ensure_ascii=False, indent=2))
+            text.setReadOnly(True)
+            layout.addWidget(text)
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(preview.accept)
+            buttons.rejected.connect(preview.reject)
+            layout.addWidget(buttons)
+            if preview.exec():
+                data_io.backup_database()
+                data_io.import_records(records)
+                self._reload_view()
+        except Exception as exc:
+            QMessageBox.warning(self, "未导入", str(exc))
+
+    def _backup(self):
+        from ..data_io import backup_database
+        try:
+            path = backup_database()
+            QMessageBox.information(self, "备份完成", str(path))
+        except Exception as exc:
+            QMessageBox.warning(self, "备份失败", str(exc))
+
     def _toggle_theme(self):
         self._dark = not self._dark
-        self.setStyleSheet(DARK_QSS if self._dark else LIGHT_QSS)
+        QApplication.instance().setStyleSheet(DARK_QSS if self._dark else LIGHT_QSS)
+        save_settings(dark=self._dark)
         self.theme_btn.setText("☀️ 亮色模式" if self._dark else "🌙 暗色模式")
 
     def _run_reminder_once(self):
-        """启动时补推一次（与 reminder.py 同逻辑，但不重复弹已通知过的）。"""
-        try:
-            from ..reminder.core import collect_due_reminders, mark_notified
-            from ..reminder.notifier import show_toast
-            from ..db.session import get_session
-            s = get_session()
-            for it in collect_due_reminders(s):
-                t = it.task
-                if it.kind == "overdue":
-                    title = f"⚠️ 任务已逾期：{t.title}"
-                    body = f"截止 {it.due_at.strftime('%m-%d %H:%M')}"
-                else:
-                    title = f"📌 即将到期：{t.title}"
-                    body = f"截止 {it.due_at.strftime('%m-%d %H:%M')}"
-                if show_toast(title, body):
-                    mark_notified(s, t.id, it.kind, it.due_at)
-        except Exception as e:
-            logger.warning("启动补推失败：%s", e)
+        from .maintenance import MaintenanceWorker
+        if self._maintenance and self._maintenance.isRunning():
+            return
+        self._maintenance = MaintenanceWorker(self)
+        self._maintenance.finished.connect(self._maintenance_finished)
+        self._maintenance.start()
+
+    def _maintenance_finished(self):
+        worker = self._maintenance
+        self._maintenance = None
+        if worker:
+            worker.deleteLater()
+
+    def _maintenance_tick(self):
+        self._reload_view()
+        self._run_reminder_once()
 
     # ---------- 关闭到托盘 ----------
     def closeEvent(self, event):
-        if self._tray and self._tray.isVisible():
+        if self._tray and self._tray.isVisible() and QSystemTrayIcon.isSystemTrayAvailable() and load_settings().get("close_to_tray", True):
             event.ignore()
             self.hide()
             self._tray.showMessage("DDL Assistant", "程序已最小化到托盘，后台继续提醒。")
         else:
-            event.accept()
+            event.ignore()
+            self._quit_app()
 
     def _quit_app(self):
+        from .ai_dialog import BusyDialog
+        if any(dialog.busy() for dialog in self.findChildren(BusyDialog)):
+            QMessageBox.information(self, "请稍候", "本地 AI 仍在工作，请等待调用结束后退出。")
+            return
+        self._timer.stop()
+        if self._maintenance and self._maintenance.isRunning():
+            self._maintenance.finished.connect(self._quit_app)
+            return
+        self.service.session.close()
         self._tray.hide()
         QApplication.quit()

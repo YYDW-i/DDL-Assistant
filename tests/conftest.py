@@ -17,6 +17,15 @@ _TMP.mkdir(exist_ok=True)
 tempfile.tempdir = str(_TMP)
 
 
+@pytest.fixture(autouse=True)
+def isolated_appdata(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    from app.db.session import reset_engine_for_tests
+    reset_engine_for_tests()
+    yield
+    reset_engine_for_tests()
+
+
 @pytest.fixture()
 def temp_db(tmp_path, monkeypatch):
     """把数据库路径重定向到临时目录，初始化后返回 session 工厂。"""

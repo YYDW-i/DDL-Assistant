@@ -1,102 +1,97 @@
-# 安装/卸载 DDL Assistant 后台提醒的 Windows 计划任务。
-# 用法：
-#   安装：powershell -ExecutionPolicy Bypass -File scripts\install_reminder.ps1
-#   卸载：powershell -ExecutionPolicy Bypass -File scripts\install_reminder.ps1 -Uninstall
-#   测试：powershell -ExecutionPolicy Bypass -File scripts\install_reminder.ps1 -Test
-
+﻿# Current-user scheduler: interactive login + independent 15 minute checks.
 param(
+    [string]$ExeDirectory = "",
     [switch]$Uninstall,
-    [switch]$Test
+    [switch]$Test,
+    [switch]$TestToast,
+    [string]$ExportXml = ""
 )
-
 $ErrorActionPreference = "Stop"
-$TaskName = "DDL Assistant Reminder"
+$Sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$TaskName = "DDL Assistant Reminder-$Sid"
+$DataRoot = Join-Path $env:LOCALAPPDATA "DDLAssistant"
+$LogRoot = Join-Path $DataRoot "logs"
+New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
+$LogPath = Join-Path $LogRoot "install.log"
 
-# 项目根目录（脚本在 scripts/ 下）
-$ProjectRoot = Split-Path -Parent $PSScriptRoot
-$PythonExe = Join-Path $ProjectRoot ".venv\Scripts\pythonw.exe"
-if (-not (Test-Path $PythonExe)) {
-    $PythonExe = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-}
-
-if ($Uninstall) {
-    Write-Host "正在删除计划任务 $TaskName ..."
-    schtasks /Delete /TN $TaskName /F 2>$null
-    Write-Host "已删除。"
-    exit 0
-}
-
-if ($Test) {
-    Write-Host "立即运行一次提醒脚本（dry-run）..."
-    & (Join-Path $ProjectRoot ".venv\Scripts\python.exe") -m app.reminder --dry-run
-    exit 0
-}
-
-if (-not (Test-Path $PythonExe)) {
-    Write-Error "未找到虚拟环境 Python：$PythonExe，请先创建 .venv 并安装依赖。"
-    exit 1
-}
-
-Write-Host "Python: $PythonExe"
-Write-Host "项目根: $ProjectRoot"
-
-# 先删除旧任务（若存在）
-schtasks /Delete /TN $TaskName /F 2>$null
-
-# 用 XML 定义任务，最稳妥：登录时触发 + 每 15 分钟重复一次，无限持续
-$xml = @"
+try {
+    if ($Uninstall) {
+        $Task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if ($Task) { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false }
+        "Reminder task removed. User data preserved." | Tee-Object -FilePath $LogPath
+        exit 0
+    }
+    if (-not $ExeDirectory) {
+        if (Test-Path -LiteralPath (Join-Path $PSScriptRoot "DDLAssistantReminder.exe")) { $ExeDirectory = $PSScriptRoot }
+    }
+    if ($ExeDirectory) {
+        $ReminderExe = Join-Path $ExeDirectory "DDLAssistantReminder.exe"
+        $GuiExe = Join-Path $ExeDirectory "DDLAssistant.exe"
+        $ReminderArgs = ""
+        $Working = $ExeDirectory
+        $IdentityArgs = @("--register-identity")
+    } else {
+        $Working = Split-Path -Parent $PSScriptRoot
+        $ReminderExe = Join-Path $Working ".venv\Scripts\pythonw.exe"
+        $GuiExe = Join-Path $Working ".venv\Scripts\python.exe"
+        $ReminderArgs = '-m app.reminder'
+        $IdentityArgs = @((Join-Path $Working "launcher.py"), "--register-identity")
+    }
+    if (-not (Test-Path -LiteralPath $ReminderExe)) { throw "Reminder executable not found: $ReminderExe" }
+    if (-not (Test-Path -LiteralPath $GuiExe)) { throw "GUI executable not found: $GuiExe" }
+    if ($Test -or $TestToast) {
+        $Mode = if ($TestToast) { "--test-toast" } else { "--dry-run" }
+        $ArgsText = ("$ReminderArgs $Mode").Trim()
+        $Process = Start-Process -FilePath $ReminderExe -ArgumentList $ArgsText -WorkingDirectory $Working -WindowStyle Hidden -Wait -PassThru
+        if ($Process.ExitCode -ne 0) { throw "Reminder test failed (exit $($Process.ExitCode)); see logs/reminder.log" }
+        Write-Host "Check finished; see $DataRoot\logs\reminder.log"
+        exit 0
+    }
+    $CommandXml = [System.Security.SecurityElement]::Escape($ReminderExe)
+    $ArgumentsXml = [System.Security.SecurityElement]::Escape($ReminderArgs)
+    $WorkingXml = [System.Security.SecurityElement]::Escape($Working)
+    $StartBoundary = (Get-Date).AddMinutes(1).ToString("yyyy-MM-ddTHH:mm:ss")
+    $Xml = @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>DDL Assistant 后台提醒：每 15 分钟检查一次，登录时补推错过的通知。</Description>
-  </RegistrationInfo>
+  <RegistrationInfo><Description>DDL Assistant reminders: login catch-up and 15 minute checks.</Description></RegistrationInfo>
   <Triggers>
-    <LogonTrigger>
-      <Enabled>true</Enabled>
-      <Repetition>
-        <Interval>PT15M</Interval>
-        <Duration>P9999D</Duration>
-        <StopAtDurationEnd>false</StopAtDurationEnd>
-      </Repetition>
-    </LogonTrigger>
+    <LogonTrigger><Enabled>true</Enabled><UserId>$Sid</UserId></LogonTrigger>
+    <TimeTrigger>
+      <Repetition><Interval>PT15M</Interval><StopAtDurationEnd>false</StopAtDurationEnd></Repetition>
+      <StartBoundary>$StartBoundary</StartBoundary><Enabled>true</Enabled>
+    </TimeTrigger>
   </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <LogonType>InteractiveToken</LogonType>
-      <RunLevel>LeastPrivilege</RunLevel>
-    </Principal>
-  </Principals>
+  <Principals><Principal id="Author"><UserId>$Sid</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable><Enabled>true</Enabled><ExecutionTimeLimit>PT10M</ExecutionTimeLimit>
   </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>$($PythonExe -replace '\\','\\')</Command>
-      <Arguments>-m app.reminder</Arguments>
-      <WorkingDirectory>$($ProjectRoot -replace '\\','\\')</WorkingDirectory>
-    </Exec>
-  </Actions>
+  <Actions Context="Author"><Exec><Command>$CommandXml</Command><Arguments>$ArgumentsXml</Arguments><WorkingDirectory>$WorkingXml</WorkingDirectory></Exec></Actions>
 </Task>
 "@
-
-$xmlPath = Join-Path $env:TEMP "ddl_assistant_task.xml"
-$xml | Out-File -FilePath $xmlPath -Encoding Unicode
-
-Write-Host "注册计划任务..."
-schtasks /Create /TN $TaskName /XML $xmlPath /F
-if ($LASTEXITCODE -eq 0) {
-    Write-Host "✅ 计划任务已安装。"
-    Write-Host "   - 每次登录时自动运行，并每 15 分钟重复检查"
-    Write-Host "   - 关机/休眠期间错过的提醒，下次登录会自动补推"
-    Write-Host "   - 查看任务：schtasks /Query /TN `"$TaskName`""
-    Write-Host "   - 立即测试：powershell -File scripts\install_reminder.ps1 -Test"
-} else {
-    Write-Error "注册失败，错误码 $LASTEXITCODE"
+    if ($ExportXml) {
+        $Xml | Set-Content -LiteralPath $ExportXml -Encoding Unicode
+        exit 0
+    }
+    # Wait for identity registration before running the scheduled notifier.
+    if ($ExeDirectory) {
+        $IdentityProcess = Start-Process -FilePath $GuiExe -ArgumentList $IdentityArgs -WindowStyle Hidden -Wait -PassThru
+        if ($IdentityProcess.ExitCode -ne 0) { throw "Notification identity registration failed." }
+    } else {
+        & $GuiExe @IdentityArgs
+        if ($LASTEXITCODE -ne 0) { throw "Notification identity registration failed." }
+    }
+    $XmlPath = Join-Path $DataRoot "reminder-task.xml"
+    $Xml | Set-Content -LiteralPath $XmlPath -Encoding Unicode
+    & schtasks.exe /Create /TN $TaskName /XML $XmlPath /F
+    if ($LASTEXITCODE -ne 0) { throw "Task registration failed: $LASTEXITCODE" }
+    & schtasks.exe /Run /TN $TaskName
+    if ($LASTEXITCODE -ne 0) { throw "Task start failed: $LASTEXITCODE" }
+    "$(Get-Date -Format s) Reminder enabled: $TaskName" | Tee-Object -FilePath $LogPath
+} catch {
+    "$(Get-Date -Format s) FAILED: $_" | Tee-Object -FilePath $LogPath
+    Write-Error $_
+    exit 1
 }

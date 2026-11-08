@@ -1,35 +1,88 @@
-"""Pydantic 模型：AI 输出结构化校验。"""
-from __future__ import annotations
-
+"""Strict structured outputs for extraction and proposed task changes."""
 from datetime import date, time
-from typing import Optional
+from typing import Literal, Optional, Annotated
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, WithJsonSchema
 
-from pydantic import BaseModel, Field
+LocalTime = Annotated[time, WithJsonSchema({"type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$", "description": "HH:MM本地时间，如14:30，不带时区"})]
 
 
 class ExtractedTask(BaseModel):
-    """从自然语言/截图中识别出的单个任务。"""
-
-    title: str = Field(description="任务标题，简洁明确")
-    description: str = Field(default="", description="补充说明")
-    category: str = Field(default="", description="分类：课程/竞赛/活动/个人 等")
-    due_date: Optional[date] = Field(default=None, description="截止日期；无法确定时留空，不要编造")
-    due_time: Optional[time] = Field(default=None, description="截止时间；全天事项留空")
-    all_day: bool = Field(default=False)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    title: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    category: str = Field(default="", max_length=50)
+    due_date: Optional[date] = None
+    due_time: Optional[LocalTime] = None
+    all_day: bool = False
     priority: int = Field(default=2, ge=1, le=4)
-    date_ambiguous: bool = Field(
-        default=False,
-        description="日期是否存在歧义（例如'下周三'未说明月份）；为 true 时必须由用户确认",
-    )
+    date_ambiguous: bool = False
+
+    @field_validator("due_time")
+    @classmethod
+    def local_time(cls, value):
+        if value is not None and value.tzinfo is not None:
+            raise ValueError("请返回HH:MM本地时间，不要添加时区")
+        return value
+
+    @model_validator(mode="after")
+    def require_confirmation(self):
+        if self.due_date is None:
+            self.date_ambiguous = True
+        return self
 
 
 class ExtractedTaskList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     tasks: list[ExtractedTask] = Field(default_factory=list)
-    note: str = Field(default="", description="给用户的补充说明，例如日期歧义提醒")
+    note: str = ""
+
+
+class TaskPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = None
+    category: Optional[str] = Field(default=None, max_length=50)
+    due_date: Optional[date] = None
+    due_time: Optional[LocalTime] = None
+    all_day: Optional[bool] = None
+    priority: Optional[int] = Field(default=None, ge=1, le=4)
+    estimated_hours: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def omit_unchanged_fields(cls, values):
+        # Small local models often emit every optional key as null. Null is not
+        # an instruction to erase data. Set all_day=true to clear the time.
+        if isinstance(values, dict):
+            return {key: value for key, value in values.items() if value is not None}
+        return values
+
+    @model_validator(mode="after")
+    def reject_null_required_fields(self):
+        for key in self.model_fields_set - {"due_time"}:
+            if getattr(self, key) is None:
+                raise ValueError(f"{key} 不能设为空")
+        return self
+
+
+class SuggestedAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["update", "delete", "complete", "reopen"]
+    task_id: int = Field(gt=0)
+    fields: TaskPatch = Field(default_factory=TaskPatch)
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def check_action(self):
+        values = self.fields.model_dump(exclude_unset=True)
+        if self.action != "update" and values:
+            raise ValueError("只有修改操作可携带字段")
+        if self.action == "update" and not values:
+            raise ValueError("修改操作必须包含字段")
+        return self
 
 
 class AIQueryResult(BaseModel):
-    """AI 回答用户关于任务的提问/修改建议。"""
-
+    model_config = ConfigDict(extra="forbid")
     reply: str
-    suggested_actions: list[dict] = Field(default_factory=list)
+    suggested_actions: list[SuggestedAction] = Field(default_factory=list)

@@ -10,7 +10,7 @@ from datetime import date, datetime, time
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import Date, DateTime, Float, Integer, String, Text, Time, Boolean, Index
+from sqlalchemy import Date, DateTime, Float, Integer, String, Text, Time, Boolean, Index, JSON, CheckConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -65,9 +65,15 @@ class Task(Base):
 
     # 来源：manual / ai
     source: Mapped[str] = mapped_column(String(20), default="manual", server_default="manual")
+    source_detail: Mapped[str] = mapped_column(Text, default="", server_default="")
+    reminder_times: Mapped[Optional[list]] = mapped_column(JSON(none_as_null=True), nullable=True)
 
     __table_args__ = (
         Index("ix_tasks_status_date", "status", "due_date"),
+        CheckConstraint("length(trim(title)) BETWEEN 1 AND 200", name="ck_task_title"),
+        CheckConstraint("priority BETWEEN 1 AND 4", name="ck_task_priority"),
+        CheckConstraint("estimated_hours >= 0", name="ck_task_hours"),
+        CheckConstraint("status IN ('pending', 'completed')", name="ck_task_status"),
     )
 
     def __repr__(self) -> str:  # pragma: no cover
