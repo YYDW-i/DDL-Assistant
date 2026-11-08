@@ -127,6 +127,11 @@ class MainWindow(QMainWindow):
         add_btn.setObjectName("PrimaryBtn")
         add_btn.clicked.connect(self._open_add)
         top.addWidget(add_btn)
+
+        ai_btn = QPushButton("✨ AI 智能添加")
+        ai_btn.setStyleSheet("background:#8e44ad;color:white;padding:8px 18px;border-radius:8px;font-weight:600;")
+        ai_btn.clicked.connect(self._open_ai)
+        top.addWidget(ai_btn)
         mlayout.addLayout(top)
 
         # 统计卡片
@@ -273,4 +278,10 @@ class MainWindow(QMainWindow):
                 priority=dlg.get_priority(),
                 estimated_hours=dlg.get_estimated_hours(),
             )
+            self.refresh()
+
+    def _open_ai(self):
+        from .ai_dialog import AIDialog
+        dlg = AIDialog(self)
+        if dlg.exec():
             self.refresh()
