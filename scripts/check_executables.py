@@ -21,6 +21,7 @@ for name, arguments in [("DDLAssistant.exe", ["--self-check"]),
     subprocess.run([str(executable), *arguments], env=env, check=True, timeout=120)
 report = json.loads((OUTPUT / "DDLAssistant/self-check.json").read_text(encoding="utf-8"))
 assert report["frozen"] and report["gui_ready"], report
+assert report["daily_plan_ready"], report
 assert json.loads((OUTPUT / "DDLAssistant/reminder-diagnostics.json").read_text())["notification_libraries_loaded"]
 with sqlite3.connect(OUTPUT / "DDLAssistant/ddl_assistant.db") as connection:
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

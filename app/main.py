@@ -64,13 +64,16 @@ def main(argv=None):
                     dialog = kind(win)
                     dialog.close()
                 win._switch_view("calendar")
+                win._switch_view("plan")
+                win.grab().save(str(config.data_dir() / "plan-self-check.png"))
                 win._switch_view("all")
                 win.grab().save(str(config.data_dir() / "self-check.png"))
                 path = backup_if_due()
                 (config.data_dir() / "self-check.json").write_text(json.dumps({
                     "gui_ready": win.isVisible(), "database": str(config.db_path()),
                     "backup": str(path), "stats": win.service.stats(),
-                    "python": sys.version, "frozen": bool(getattr(sys, "frozen", False))
+                    "python": sys.version, "frozen": bool(getattr(sys, "frozen", False)),
+                    "daily_plan_ready": win.plan_view.table is not None
                 }, ensure_ascii=False, indent=2), encoding="utf-8")
                 win._quit_app()
             QTimer.singleShot(500, check)

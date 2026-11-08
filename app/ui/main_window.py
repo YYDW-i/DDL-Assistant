@@ -85,6 +85,7 @@ QCalendarWidget QAbstractItemView:enabled { background: #2a2d35; color: #e4e6eb;
 
 class MainWindow(QMainWindow):
     VIEWS = [
+        ("plan", "今日计划"),
         ("today", "今日任务"),
         ("week", "本周任务"),
         ("all", "全部任务"),
@@ -144,6 +145,7 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(logo)
 
         self.nav_group = QButtonGroup(self)
+        self.nav_buttons = {}
         self.nav_group.setExclusive(True)
         for key, label in self.VIEWS:
             btn = QPushButton(f"  {label}")
@@ -151,6 +153,7 @@ class MainWindow(QMainWindow):
             btn.setCheckable(True)
             btn.clicked.connect(lambda _=False, k=key: self._switch_view(k))
             self.nav_group.addButton(btn)
+            self.nav_buttons[key] = btn
             side_layout.addWidget(btn)
             if key == self.current_view:
                 btn.setChecked(True)
@@ -233,6 +236,10 @@ class MainWindow(QMainWindow):
         # 日历视图
         self.calendar_view = CalendarView(self.service)
         self.stack.addWidget(self.calendar_view)
+        from .daily_plan import DailyPlanView
+        self.plan_view = DailyPlanView(self.service)
+        self.plan_view.changed.connect(self._reload_view)
+        self.stack.addWidget(self.plan_view)
         mlayout.addWidget(self.stack, stretch=1)
 
         hint = QLabel("双击编辑；右键完成/删除；Ctrl+N 新建，Ctrl+Shift+A AI 添加，Ctrl+~ 最小化到托盘")
@@ -277,11 +284,17 @@ class MainWindow(QMainWindow):
     # ---------- 数据刷新 ----------
     def _switch_view(self, key: str):
         self.current_view = key
+        if key in self.nav_buttons:
+            self.nav_buttons[key].setChecked(True)
         self._reload_view()
 
     def _reload_view(self):
         self.service.session.expire_all()
-        if self.current_view == "calendar":
+        if self.current_view == "plan":
+            self.stack.setCurrentWidget(self.plan_view)
+            self.plan_view.reload(search=self.search_box.text().strip() or None)
+            self.title_label.setText("今日计划")
+        elif self.current_view == "calendar":
             self.stack.setCurrentWidget(self.calendar_view)
             self.calendar_view._mark_days()
             self.title_label.setText("月历")

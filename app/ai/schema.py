@@ -15,6 +15,7 @@ class ExtractedTask(BaseModel):
     due_time: Optional[LocalTime] = None
     all_day: bool = False
     priority: int = Field(default=2, ge=1, le=4)
+    estimated_hours: float = Field(default=0, ge=0, allow_inf_nan=False)
     date_ambiguous: bool = False
 
     @field_validator("due_time")
@@ -34,6 +35,23 @@ class ExtractedTask(BaseModel):
 class ExtractedTaskList(BaseModel):
     model_config = ConfigDict(extra="forbid")
     tasks: list[ExtractedTask] = Field(default_factory=list)
+    note: str = ""
+
+
+class PlannedTask(ExtractedTask):
+    planned_start: Optional[LocalTime] = None
+
+    @field_validator("planned_start")
+    @classmethod
+    def local_start(cls, value):
+        if value is not None and value.tzinfo is not None:
+            raise ValueError("计划开始时间不能包含时区")
+        return value
+
+
+class DailyPlanProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    tasks: list[PlannedTask] = Field(default_factory=list)
     note: str = ""
 
 

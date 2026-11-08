@@ -1,5 +1,5 @@
 """Text/image extraction with editable, explicitly confirmed atomic previews."""
-from datetime import date, time
+from datetime import date, time, datetime
 from pathlib import Path
 from uuid import uuid4
 from PySide6.QtCore import Qt, QThread, Signal, QEvent
@@ -15,16 +15,19 @@ from ..services.task_service import TaskCreate, TaskService, validate_task
 class _AIWorker(QThread):
     done = Signal(object)
 
-    def __init__(self, text="", image_path=None, question=None, summary=None, parent=None):
+    def __init__(self, text="", image_path=None, question=None, summary=None, parent=None, plan_date=None):
         super().__init__(parent)
         self.text, self.image_path = text, image_path
         self.question, self.summary = question, summary
         self.result = None
+        self.plan_date = plan_date
 
     def run(self):
         try:
             if self.question is not None:
                 self.result = extractor.answer_question(self.question, self.summary)
+            elif self.plan_date is not None:
+                self.result = extractor.generate_daily_plan(self.text, self.plan_date, self.image_path)
             elif self.image_path:
                 self.result = extractor.extract_tasks_from_image(self.image_path, self.text)
             else:
@@ -53,9 +56,12 @@ class BusyDialog(QDialog):
 
 
 class AIDialog(BusyDialog):
-    def __init__(self, parent=None, initial_text=""):
+    def __init__(self, parent=None, initial_text="", plan_date=None):
         super().__init__(parent)
         self.setWindowTitle("AI 智能添加")
+        self._plan_date = plan_date
+        if plan_date:
+            self.setWindowTitle(f"AI 生成一日计划 · {plan_date.isoformat()}")
         self.resize(950, 610)
         self.service = TaskService()
         self._worker = None
@@ -86,8 +92,11 @@ class AIDialog(BusyDialog):
         self.status = QLabel("")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-        self.table = QTableWidget(0, 9)
-        self.table.setHorizontalHeaderLabels(["添加", "标题", "分类", "截止日期", "时间", "全天", "重要程度", "描述", "日期已确认"])
+        self.table = QTableWidget(0, 12 if plan_date else 11)
+        headers = ["添加", "标题", "分类", "截止日期", "时间", "全天", "重要程度", "描述", "日期已确认", "预计小时", "自定义提醒（;分隔）"]
+        if plan_date:
+            headers.append("计划开始")
+        self.table.setHorizontalHeaderLabels(headers)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(7, QHeaderView.Stretch)
@@ -96,6 +105,8 @@ class AIDialog(BusyDialog):
         self.note_label.setWordWrap(True)
         layout.addWidget(self.note_label)
         self.commit_btn = QPushButton("确认添加勾选任务")
+        if plan_date:
+            self.commit_btn.setText("确认保存任务并加入当日计划")
         self.commit_btn.setEnabled(False)
         self.commit_btn.clicked.connect(self._commit)
         layout.addWidget(self.commit_btn)
@@ -151,7 +162,7 @@ class AIDialog(BusyDialog):
         self.commit_btn.setEnabled(False)
         self.recognize_btn.setEnabled(False)
         self.status.setText("本地 AI 识别中…调用超时后可重试；请等待结束再关闭。")
-        self._worker = _AIWorker(text, self._image_path, parent=self)
+        self._worker = _AIWorker(text, self._image_path, parent=self, plan_date=self._plan_date)
         self._worker.finished.connect(lambda: self._on_result(self._worker.result))
         self._worker.start()
 
@@ -184,6 +195,13 @@ class AIDialog(BusyDialog):
             self.table.setItem(row, 6, QTableWidgetItem(str(task.priority)))
             self.table.setItem(row, 7, QTableWidgetItem(task.description))
             self.table.setItem(row, 8, self._check(not task.date_ambiguous and task.due_date is not None))
+            self.table.setItem(row, 9, QTableWidgetItem(str(task.estimated_hours)))
+            reminder = QTableWidgetItem("")
+            reminder.setToolTip("留空使用默认提前72/24/3小时；也可输入多个YYYY-MM-DD HH:MM，以英文分号分隔")
+            self.table.setItem(row, 10, reminder)
+            if self._plan_date:
+                start = getattr(task, "planned_start", None)
+                self.table.setItem(row, 11, QTableWidgetItem(start.strftime("%H:%M") if start else ""))
 
     def preview_tasks(self):
         tasks = []
@@ -200,6 +218,8 @@ class AIDialog(BusyDialog):
                     due_time=time.fromisoformat(value(4)) if value(4) else None,
                     all_day=self.table.item(row, 5).checkState() == Qt.Checked,
                     priority=int(value(6)), description=value(7), source="ai",
+                    estimated_hours=float(value(9)),
+                    reminder_times=[datetime.fromisoformat(v.strip()).isoformat(timespec="minutes") for v in value(10).split(";") if v.strip()] if value(10) else None,
                     source_detail=self.input.toPlainText().strip() + (" [截图]" if self._image_path else ""))
                 validate_task(data)
                 tasks.append(data)
@@ -209,12 +229,21 @@ class AIDialog(BusyDialog):
             raise ValueError("请至少勾选一条任务")
         return tasks
 
+    def preview_starts(self):
+        return [time.fromisoformat(self.table.item(row, 11).text().strip())
+                if self.table.item(row, 11).text().strip() else None
+                for row in range(self.table.rowCount()) if self.table.item(row, 0).checkState() == Qt.Checked]
+
     def _commit(self):
         if self.busy():
             return
         try:
             tasks = self.preview_tasks()
-            self.service.create_many(tasks)
+            if self._plan_date:
+                from ..services.plan_service import DailyPlanService
+                DailyPlanService(self.service.session).create_tasks(self._plan_date, tasks, self.preview_starts())
+            else:
+                self.service.create_many(tasks)
         except Exception as exc:
             self.service.session.rollback()
             QMessageBox.warning(self, "未添加任务", str(exc))
